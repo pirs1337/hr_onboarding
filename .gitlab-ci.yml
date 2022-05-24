@@ -1,0 +1,107 @@
+stages:
+  - prepare
+  - tests
+  - push
+  - deploy
+
+variables:
+  CI_PROJECT_NAME: hr-onboarding
+  DOMAIN: api.hr-onboarding.ronasit.com
+  DOCKERFILE: ./Dockerfile
+  CHART_REPO: ronasit/laravel
+  CHART_VERSION: &ref 8.2.7
+  CHART_VALUES: k8s/values.yaml
+  DOCKER_CONTAINER_REGISTRY: gcr.io/ronas-it-development/${CI_PROJECT_NAME}-${CI_ENVIRONMENT_SLUG}
+  APP_NAME: hr-onboarding
+
+include:
+  - project: 'k8s-tools/charts/laravel'
+    ref: *ref
+    file: '/helpers/.gitlab-ci-template.yml'
+
+cache: &global_cache
+  paths:
+    - ./vendor
+  policy: pull
+
+php_dependencies:
+  stage: prepare
+  image: ronasit/php-nginx:8.1
+  cache:
+    <<: *global_cache
+    policy: pull-push
+  script:
+    - composer install
+  tags:
+    - docker
+    - linux
+
+tests:
+  stage: tests
+  variables:
+    DB_CONNECTION: pgsql
+    DB_HOST: pgsql_test
+    POSTGRES_USER: forge
+    POSTGRES_DB: forge
+    POSTGRES_PASSWORD: ""
+    REDIS_HOST: "redis"
+    MAIL_DRIVER: log
+    FILESYSTEM_DRIVER: testing
+    APP_ENV: testing
+    APP_DEBUG: "true"
+    APP_LOG_LEVEL: debug
+    APP_URL: http://localhost
+    DATA_COLLECTOR_KEY: hr-onboarding
+    FAIL_EXPORT_JSON: "true"
+  image: ronasit/php-nginx:8.1
+  services:
+    - name: ronasit/postgres:12.5
+      alias: pgsql_test
+  script:
+    - composer install
+    - php artisan key:generate --env=testing
+    - php vendor/bin/phpunit --stop-on-failure ./tests/
+  after_script:
+    - cat storage/logs/*.log || true
+  tags:
+    - docker
+    - linux
+
+deploy:
+  extends: .deploy
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: https://${CI_ENVIRONMENT_SLUG}.${DOMAIN}
+    on_stop: stop
+  when: manual
+  except:
+    - development
+    - master
+    - production
+    - tags
+
+stop:
+  extends: .stop
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  except:
+    - development
+    - master
+    - production
+    - tags
+
+push_development:
+  extends: .push_gcr
+  environment:
+    name: "development"
+  only:
+    - development
+
+deploy_development:
+  extends: .deploy
+  environment:
+    name: "development"
+    url: https://dev.${DOMAIN}
+  only:
+    - development
